@@ -1,0 +1,14 @@
+[project]
+name = "portico-poc"
+version = "0.0.1"
+description = "Portico 底座鉴权链 PoC —— 在接入真实 Obot 之前先用 mock 把两层鉴权跑通"
+requires-python = ">=3.11"
+dependencies = ["jsonschema>=4.20"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q --strict-markers"

@@ -1,0 +1,104 @@
+{
+  "capability_id": "crm.customer.update_note",
+  "version": "1.0.0",
+  "system_id": "crm",
+  "business_domain": "crm.customer",
+  "display_name": "更新客户跟进备注",
+  "description": "在指定客户的跟进记录中追加一条备注。只能追加，不能覆盖或删除历史备注。仅当客户归属于调用人时可执行。本能力用于记录沟通结论、下一步计划等文本，不修改客户状态、负责人或金额等结构化字段。",
+
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["customer_id", "note", "expected_version"],
+    "properties": {
+      "customer_id": {
+        "type": "string",
+        "description": "客户唯一 ID。网关会校验该客户是否属于调用人负责范围，不属于则直接拒绝。"
+      },
+      "note": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2000,
+        "description": "要追加的备注正文。纯文本，不支持富文本或附件。"
+      },
+      "expected_version": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "调用方读取到的客户记录版本号。用于乐观锁——版本已变化说明他人先改过，必须重新读取后再提交，避免覆盖。"
+      }
+    }
+  },
+
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "customer_id": { "type": "string", "description": "被更新的客户 ID。" },
+      "new_version": { "type": "integer", "description": "更新后的记录版本号，可用于后续连续操作。" },
+      "note_id": { "type": "string", "description": "新建备注的唯一 ID，供审计追溯。" }
+    }
+  },
+
+  "permission": {
+    "platform_permission": "crm.customer.write",
+    "requires_data_scope": true,
+    "additional_grants": ["crm.customer.read"]
+  },
+
+  "risk_level": "low_write",
+  "side_effect": "idempotent_write",
+  "adapter_ref": "adapter://crm/rest-v1",
+  "timeout_ms": 5000,
+  "data_classification": "confidential",
+
+  "owner": {
+    "team": "客户成功部",
+    "contact": "customer-success@example.com",
+    "business_reviewed_at": "2026-11-23"
+  },
+
+  "actor_propagation": {
+    "mode": "oauth_delegated",
+    "bypass_protection": "CRM 接受 OAuth 委托令牌，操作最终在调用人本人权限下执行；CRM 自身按客户归属校验写入权，适配器不额外持有写权限。"
+  },
+
+  "data_scope": {
+    "enforced_by": "source_system",
+    "dimensions": ["customer_owner"],
+    "fail_closed": true
+  },
+
+  "audit_policy": {
+    "level": "full",
+    "record_status": true,
+    "retention_days": 365
+  },
+
+  "idempotency": {
+    "supported": true,
+    "key_source": "client_header",
+    "conflict_behavior": "reject_with_conflict"
+  },
+
+  "rate_limit": {
+    "requests_per_minute": 30
+  },
+
+  "examples": [
+    {
+      "name": "追加跟进备注",
+      "input": { "customer_id": "C-1001", "note": "已沟通续约意向，下周提供报价方案。", "expected_version": 3 }
+    },
+    {
+      "name": "反例：客户不属于本人负责范围",
+      "input": { "customer_id": "C-9999", "note": "尝试写入他人客户", "expected_version": 1 },
+      "expected_error": "FORBIDDEN"
+    },
+    {
+      "name": "反例：版本冲突",
+      "input": { "customer_id": "C-1001", "note": "并发修改", "expected_version": 1 },
+      "expected_error": "VERSION_CONFLICT"
+    }
+  ],
+
+  "status": "draft"
+}

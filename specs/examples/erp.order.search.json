@@ -1,0 +1,117 @@
+{
+  "capability_id": "erp.order.search",
+  "version": "1.0.0",
+  "system_id": "erp",
+  "business_domain": "sales.order",
+  "display_name": "查询订单明细",
+  "description": "按时间区间与区域查询销售订单明细。返回每笔订单的客户、区域、金额、状态与下单时间。金额为含税口径，人民币。仅用于问数与报表；本能力不修改任何订单状态。当用户询问的是汇总数字而非明细时，优先使用 erp.order.summary 以避免拉取过多行。",
+
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["start_date", "end_date"],
+    "properties": {
+      "start_date": {
+        "type": "string",
+        "format": "date",
+        "description": "起始日期（含），格式 YYYY-MM-DD，按 Asia/Shanghai 自然日计算。"
+      },
+      "end_date": {
+        "type": "string",
+        "format": "date",
+        "description": "结束日期（含），格式 YYYY-MM-DD。与 start_date 跨度不得超过 90 天。"
+      },
+      "region": {
+        "type": "string",
+        "description": "销售区域代码。注意：此参数会被网关按调用主体的授权区域求交集收紧，传入超出范围的值不会扩大可见数据。"
+      },
+      "status": {
+        "type": "string",
+        "enum": ["created", "paid", "shipped", "cancelled"],
+        "description": "订单状态过滤。不传表示全部状态。"
+      },
+      "page_size": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "单页返回条数，默认 30。"
+      }
+    }
+  },
+
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "rows": {
+        "type": "array",
+        "description": "订单明细行，已按调用主体数据范围过滤。"
+      },
+      "total": {
+        "type": "integer",
+        "description": "当前范围内的总条数（非本页条数）。"
+      },
+      "amount_scope": {
+        "type": "string",
+        "description": "金额口径说明，固定返回 tax_included_cny，表示含税人民币金额。调用方不得自行假设为税前。"
+      }
+    }
+  },
+
+  "permission": {
+    "platform_permission": "erp.order.read",
+    "requires_data_scope": true
+  },
+
+  "risk_level": "read_only",
+  "side_effect": "none",
+  "adapter_ref": "adapter://erp/rest-v2",
+  "timeout_ms": 8000,
+  "data_classification": "confidential",
+
+  "owner": {
+    "team": "销售运营部",
+    "contact": "sales-ops@example.com",
+    "business_reviewed_at": "2026-11-23"
+  },
+
+  "actor_propagation": {
+    "mode": "service_account_with_actor_validation",
+    "bypass_protection": "适配器以服务账号访问 ERP，但必须先通过可信身份上下文得到 actor 并据此拼接区域过滤条件；ERP 侧的 region 维度同时做二次校验。该模式下适配器实际承担业务鉴权责任，须通过 P01 双用户隔离测试方可发布。"
+  },
+
+  "data_scope": {
+    "enforced_by": "adapter",
+    "dimensions": ["region"],
+    "fail_closed": true
+  },
+
+  "audit_policy": {
+    "level": "summary",
+    "record_status": false,
+    "retention_days": 180
+  },
+
+  "rate_limit": {
+    "requests_per_minute": 60,
+    "max_rows_per_call": 100
+  },
+
+  "examples": [
+    {
+      "name": "华南区销售查询本人区域订单",
+      "input": { "start_date": "2026-11-01", "end_date": "2026-11-22", "region": "south-china" }
+    },
+    {
+      "name": "反例：越区查询被拒绝或收紧",
+      "input": { "start_date": "2026-11-01", "end_date": "2026-11-22", "region": "north-china" },
+      "expected_error": "FORBIDDEN"
+    },
+    {
+      "name": "反例：时间跨度过大",
+      "input": { "start_date": "2025-01-01", "end_date": "2026-11-22" },
+      "expected_error": "VALIDATION_ERROR"
+    }
+  ],
+
+  "status": "draft"
+}

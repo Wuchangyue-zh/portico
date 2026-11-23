@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portico.dev/schemas/capability.schema.json",
+  "title": "Portico Capability Contract",
+  "description": "企业业务能力的机读契约。定义在 MCP 传输协议之上的业务元数据层：来源系统、权限、数据范围、副作用、幂等与审计。MCP 只解决'怎么调用'，本契约解决'能不能调、能看多少、出问题算谁的'。",
+  "type": "object",
+  "additionalProperties": false,
+
+  "required": [
+    "capability_id",
+    "version",
+    "system_id",
+    "business_domain",
+    "display_name",
+    "description",
+    "input_schema",
+    "output_schema",
+    "permission",
+    "risk_level",
+    "side_effect",
+    "adapter_ref",
+    "timeout_ms",
+    "data_classification",
+    "owner",
+    "actor_propagation",
+    "data_scope",
+    "audit_policy"
+  ],
+
+  "properties": {
+    "capability_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_-]*)+$",
+      "description": "全局唯一且永不复用的能力 ID，格式为 domain.object.action，例如 erp.order.search。ID 一旦发布不得改名——改名等于新增能力，旧 ID 走 deprecated 下线。",
+      "examples": ["erp.order.search", "crm.customer.update_note"]
+    },
+
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "SemVer。删除字段、收紧数据范围、修改统计口径、改变权限语义都算不兼容变更，必须升主版本。"
+    },
+
+    "system_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]*$",
+      "description": "来源系统的稳定 ID，与 Registry 中 system 记录对应。"
+    },
+
+    "business_domain": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "业务领域分类，供能力检索按域召回，例如 sales.order、support.ticket。"
+    },
+
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "面向员工的中文名称。会被直接展示在'调用了什么能力'里，必须是业务人员看得懂的话，不能是接口名。"
+    },
+
+    "description": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 2000,
+      "description": "语义说明，既是给人看的也是给模型选工具用的。必须写清：做什么、返回什么口径、什么情况下不该用。写不清楚的能力不得发布。"
+    },
+
+    "input_schema": {
+      "$ref": "#/$defs/jsonSchema",
+      "description": "入参 JSON Schema。每个业务参数都要有 description，说明单位、时区、边界含义。"
+    },
+
+    "output_schema": {
+      "$ref": "#/$defs/jsonSchema",
+      "description": "出参 JSON Schema。金额类字段必须在 description 中声明币种与税前/税后口径。"
+    },
+
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform_permission", "requires_data_scope"],
+      "description": "网关层（第一层）鉴权声明。注意这只是'能不能调这个工具'，不代表'能看哪些数据'。",
+      "properties": {
+        "platform_permission": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+          "description": "调用该能力所需的最小平台权限点，例如 erp.order.read。",
+          "examples": ["erp.order.read", "crm.customer.write"]
+        },
+        "requires_data_scope": {
+          "type": "boolean",
+          "description": "是否强制要求调用主体带数据范围。为 true 时，若无法从可信身份推导出任何有效范围，必须拒绝而不是放行全量。"
+        },
+        "additional_grants": {
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true,
+          "description": "除 platform_permission 外还必须同时具备的权限点。用于高风险能力的权限合取，避免单一权限点过宽。"
+        }
+      }
+    },
+
+    "risk_level": {
+      "type": "string",
+      "enum": ["read_only", "low_write", "high_impact"],
+      "description": "风险分级，决定默认执行策略。read_only 有权限即执行；low_write 需权限+schema+幂等+审计后自动执行；high_impact 不在 MVP 自动执行范围。"
+    },
+
+    "side_effect": {
+      "type": "string",
+      "enum": ["none", "idempotent_write", "non_idempotent_write"],
+      "description": "副作用性质。none 表示纯读；idempotent_write 表示同幂等键重放不产生重复业务效果；non_idempotent_write 表示无法保证，MVP 不接受此类能力上生产。"
+    },
+
+    "adapter_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "执行适配器的逻辑引用，不写死地址。用于把能力与具体部署位置解耦——换网关或换部署时这里不变。"
+    },
+
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 300000,
+      "description": "单步执行上限（毫秒），由网关强制，不依赖适配器自觉。"
+    },
+
+    "data_classification": {
+      "type": "string",
+      "enum": ["public", "internal", "confidential", "restricted"],
+      "description": "数据敏感度。confidential 及以上要求审计记录脱敏，restricted 额外要求不落模型上下文。"
+    },
+
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["team", "contact"],
+      "description": "业务责任方。没有明确责任人的能力不得发布——出问题时必须有人能回答'这个口径对不对'。",
+      "properties": {
+        "team": { "type": "string", "minLength": 1 },
+        "contact": { "type": "string", "minLength": 1 },
+        "business_reviewed_at": {
+          "type": "string",
+          "format": "date",
+          "description": "业务方确认口径的日期。缺失表示口径尚未经业务签字。"
+        }
+      }
+    },
+
+    "actor_propagation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "description": "调用人身份如何传到源系统。这是 P04 阻断项的核心字段：写不清楚就说明身份链没有闭环。",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "oauth_delegated",
+            "trusted_gateway_header",
+            "service_account_with_actor_validation",
+            "none"
+          ],
+          "description": "oauth_delegated：源系统接受用户委托令牌，最终在本人权限下执行（首选）。trusted_gateway_header：源系统只接受可信网关流量，由适配器注入经校验的 actor，且源系统网络层禁止绕过网关直连。service_account_with_actor_validation：源系统只认服务账号，适配器必须自行执行同等的用户级范围校验并记录真实操作人。none：无身份语义，仅允许 public 数据。"
+        },
+        "header_name": {
+          "type": "string",
+          "description": "mode 为 trusted_gateway_header 时注入的 Header 名。"
+        },
+        "bypass_protection": {
+          "type": "string",
+          "description": "如何保证源系统只接受来自网关的流量，例如 mTLS、IP 白名单、网络策略。mode 为 trusted_gateway_header 时必填——不写就等于承认这个 Header 可被伪造。"
+        }
+      }
+    },
+
+    "data_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enforced_by", "dimensions", "fail_closed"],
+      "description": "第二层鉴权：行级/字段级数据范围。这一层不由网关负责，必须由适配器或源系统执行。",
+      "properties": {
+        "enforced_by": {
+          "type": "string",
+          "enum": ["source_system", "adapter"],
+          "description": "source_system：源系统自身按调用人身份过滤，最可信。adapter：源系统无法做到，由适配器补齐——此时适配器实际承担了业务鉴权责任，必须单独评审与测试。"
+        },
+        "dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "受数据范围约束的维度名，与 input_schema 中的参数名对应，例如 region、customer_owner。网关会把这些参数按主体范围收紧（求交集），不允许模型传入超出范围的裸值。",
+          "examples": [["region"], ["customer_owner", "department"]]
+        },
+        "fail_closed": {
+          "type": "boolean",
+          "description": "无法确定主体范围时是否拒绝。必须为 true——宁可业务不可用，不可越权返回全量。"
+        }
+      }
+    },
+
+    "audit_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "record_status"],
+      "description": "审计要求。记录的是业务执行结果，不是'工具调用成功'——HTTP 200 不代表业务写入生效。",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["metadata_only", "summary", "full"],
+          "description": "metadata_only：只记谁在何时调了什么；summary：额外记脱敏后的入参与结果摘要；full：记录脱敏 diff（仅 local_write 及以上建议）。"
+        },
+        "record_status": {
+          "type": "boolean",
+          "description": "是否记录业务最终状态。写操作必须为 true。"
+        },
+        "retention_days": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "description": "保留天数，null 表示由组织策略决定。"
+        }
+      }
+    },
+
+    "idempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supported"],
+      "description": "幂等声明。side_effect 非 none 时必填。",
+      "properties": {
+        "supported": {
+          "type": "boolean",
+          "description": "同一幂等键重放是否保证不产生重复业务副作用。"
+        },
+        "key_source": {
+          "type": "string",
+          "enum": ["client_header", "adapter_derived"],
+          "description": "client_header：从请求头 Idempotency-Key 取。adapter_derived：由适配器按业务语义生成，例如 主体+对象+状态迁移。"
+        },
+        "conflict_behavior": {
+          "type": "string",
+          "enum": ["return_original_result", "reject_with_conflict"],
+          "description": "同键不同参数时的行为。默认 reject_with_conflict——静默返回旧结果会掩盖调用方 bug。"
+        }
+      }
+    },
+
+    "rate_limit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests_per_minute"],
+      "description": "限流声明，按主体计。防止单个 Agent 循环调用把源系统打挂。",
+      "properties": {
+        "requests_per_minute": { "type": "integer", "minimum": 1 },
+        "max_rows_per_call": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "单次返回行数上限，防止一次问数拉全表。"
+        }
+      }
+    },
+
+    "examples": {
+      "type": "array",
+      "description": "正例与反例。正例用于工具检索召回与契约测试；反例（expect_error）用于权限回归——反例缺失的能力不得发布。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "input"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "input": { "type": "object" },
+          "expected_error": {
+            "type": "string",
+            "enum": [
+              "UNAUTHORIZED",
+              "FORBIDDEN",
+              "VALIDATION_ERROR",
+              "VERSION_CONFLICT",
+              "UPSTREAM_UNAVAILABLE",
+              "RATE_LIMITED",
+              "IDEMPOTENCY_CONFLICT"
+            ]
+          }
+        }
+      }
+    },
+
+    "status": {
+      "type": "string",
+      "enum": ["draft", "validating", "published", "deprecated", "disabled"],
+      "default": "draft",
+      "description": "生命周期状态。draft 不会被员工发现；published 才进入可授权发现与调用的目录。"
+    },
+
+    "deprecation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replacement_capability_id", "sunset_date"],
+      "description": "deprecated 时必填，提供迁移路径。不能只标记废弃而不告诉调用方去哪。",
+      "properties": {
+        "replacement_capability_id": { "type": "string" },
+        "sunset_date": { "type": "string", "format": "date" },
+        "migration_note": { "type": "string" }
+      }
+    }
+  },
+
+  "allOf": [
+    {
+      "description": "纯读能力不得声明副作用",
+      "if": { "properties": { "risk_level": { "const": "read_only" } }, "required": ["risk_level"] },
+      "then": { "properties": { "side_effect": { "const": "none" } } }
+    },
+    {
+      "description": "有副作用就必须声明幂等策略",
+      "if": { "properties": { "side_effect": { "enum": ["idempotent_write", "non_idempotent_write"] } }, "required": ["side_effect"] },
+      "then": {
+        "required": ["idempotency"],
+        "properties": {
+          "risk_level": { "enum": ["low_write", "high_impact"] },
+          "audit_policy": {
+            "properties": { "record_status": { "const": true } }
+          }
+        }
+      }
+    },
+    {
+      "description": "不可幂等写入一律视为高影响，MVP 不接受其上生产",
+      "if": { "properties": { "side_effect": { "const": "non_idempotent_write" } }, "required": ["side_effect"] },
+      "then": { "properties": { "risk_level": { "const": "high_impact" } } }
+    },
+    {
+      "description": "无身份语义的能力只能是 public 数据",
+      "if": { "properties": { "actor_propagation": { "properties": { "mode": { "const": "none" } }, "required": ["mode"] } }, "required": ["actor_propagation"] },
+      "then": { "properties": { "data_classification": { "const": "public" } } }
+    },
+    {
+      "description": "trusted_gateway_header 必须说明如何阻止绕过网关直连，否则该 Header 等同可伪造",
+      "if": { "properties": { "actor_propagation": { "properties": { "mode": { "const": "trusted_gateway_header" } }, "required": ["mode"] } }, "required": ["actor_propagation"] },
+      "then": { "properties": { "actor_propagation": { "required": ["header_name", "bypass_protection"] } } }
+    },
+    {
+      "description": "数据范围必须默认拒绝：拿不到主体范围时拒绝，而不是放行全量",
+      "if": { "required": ["data_scope"] },
+      "then": { "properties": { "data_scope": { "properties": { "fail_closed": { "const": true } } } } }
+    },
+    {
+      "description": "deprecated 必须给出替代能力与下线日期",
+      "if": { "properties": { "status": { "const": "deprecated" } }, "required": ["status"] },
+      "then": { "required": ["deprecation"] }
+    }
+  ],
+
+  "$defs": {
+    "jsonSchema": {
+      "type": "object",
+      "description": "标准 JSON Schema 片段。要求每个属性带 description——参数没有语义说明时，模型只能猜。",
+      "required": ["type", "properties"],
+      "properties": {
+        "type": { "const": "object" },
+        "properties": { "type": "object", "minProperties": 1 },
+        "required": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "additionalProperties": { "type": "boolean" }
+      }
+    }
+  }
+}
