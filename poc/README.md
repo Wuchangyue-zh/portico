@@ -1,14 +1,23 @@
-# Portico PoC —— 鉴权链骨架
+# Portico PoC —— 鉴权链骨架 + Obot 适配器
 
-在接入真实 Obot 和真实 ERP 之前，先用 mock 把**两层鉴权**跑通并留下可复现的证据。
+两件事：
+1. 用 mock 把**两层鉴权**跑通并留下可复现证据
+2. 提供一个**能被 Obot 以 remote MCP Server 加载**的适配器
 
 ```bash
 cd poc
-python -m pytest          # 50 项断言
-python demo.py            # 人可读的证据输出
+python -m pytest          # 71 项断言
+python demo.py            # 人可读的鉴权链证据
+
+# 启动适配器并用真实 MCP 协议验证
+PORTICO_GATEWAY_SECRET=demo-secret PORTICO_PORT=8099 PYTHONPATH=src \
+  python -m portico_poc.mcp_adapter.server &
+PYTHONPATH=src python smoke_mcp.py
 ```
 
-依赖：Python 3.11+、`jsonschema`、`pytest`。无数据库、无网络、无外部服务。
+依赖：Python 3.11+、`jsonschema`、`mcp`、`pytest`。鉴权链本身无外部服务依赖。
+
+挂到 Obot 上的完整步骤见 **[DEPLOY-OBOT.md](DEPLOY-OBOT.md)**。
 
 ---
 
@@ -16,9 +25,9 @@ python demo.py            # 人可读的证据输出
 
 | 编号 | 问题 | 结论 |
 |---|---|---|
-| P01 | 两名员工调同一能力，能否只看到各自数据？ | ✅ 在 mock 实现内成立，重叠 0 行 |
+| P01 | 两名员工调同一能力，能否只看到各自数据？ | ✅ mock 内成立，重叠 0 行；MCP 协议级也验证过 |
 | P02 | 多角色叠加会不会意外放宽权限？ | ✅ 权限为显式并集，缺 `additional_grants` 的写能力不可见 |
-| P04 | 调用人身份能否被伪造？ | ✅ 篡改/换密钥/过期令牌均被拒；撤销立即生效 |
+| P04 | 调用人身份能否被伪造？ | ✅ 篡改/换密钥/过期令牌均被拒；无网关密钥的归属头被拒 |
 | P06 | 绕过前端直调网关能否越权？ | ✅ 被拒，且与"能力不存在"返回同一文案 |
 | P05 | 写入的幂等与乐观锁是否可靠？ | ✅ 同键重放零副作用；版本冲突独立报错 |
 
@@ -28,17 +37,35 @@ python demo.py            # 人可读的证据输出
 
 | 项 | 状态 |
 |---|---|
-| Obot 的真实身份委派行为 | ❌ 未测 |
-| Obot Profile 权限并集的真实表现 | ❌ 未测 |
-| Archestra 的任何行为 | ❌ 未测 |
+| Obot 服务端完整启动 | ❌ 卡在 `failed to initialize Docker backend`；本机无 Docker，WSL sudo 需密码 |
+| Obot 真实注入归属头 | ❌ 未测，需接上真实 Obot |
 | 真实 OAuth / OBO 令牌交换 | ❌ 未测，mock 用 HMAC 模拟签名性质，不是 OAuth |
-| `trusted_gateway_header` 模式的网络层防绕过（mTLS / 网络策略） | ❌ 未测，契约里只做了"必须填写"的强制 |
+| 网络层防绕过（mTLS / NetworkPolicy） | ❌ 未测，只做了「必须有网关密钥头」的应用层强制 |
 | 并发、超时、限流下的行为 | ⚠️ 超时用线程池模拟，线程无法真正终止，属已知局限 |
 | 性能与容量指标 | ❌ 未测，一个数字都没有 |
 | 真实 ERP / CRM 的业务规则与数据模型 | ❌ 未测，mock 数据是编的 |
 
-> **结论定位**：本 PoC 证明的是**我们的设计能表达和强制什么**，不是**候选底座能满足什么**。
-> 后者必须等 P01–P12 在真实 Obot 上跑完。参见 `docs/Portico-工程文档合订本-V1.1.md` 第 15 章。
+> **结论定位**：证明的是**我们的设计能表达和强制什么**，不是**Obot 能满足什么**。
+> 后者要等真实 Obot 跑起来后补测。参见 [DEPLOY-OBOT.md](DEPLOY-OBOT.md) 第 3 节。
+
+---
+
+## 关于 Obot 的实测发现（修正了 V1.1 文档）
+
+读源码 + 本机启动验证得到三条，与 `docs/` 里的 V1.1 描述不一致：
+
+| 发现 | 依据 |
+|---|---|
+| 默认数据库是 **SQLite**，不是 PostgreSQL | `--dsn` 默认值 `sqlite://file:obot.db?...`，实测建库与迁移成功 |
+| 服务端**硬依赖**容器运行时，无「不启用」选项 | `MCPRuntimeBackend` 仅 docker/kubernetes/k8s 三值 |
+| **remote MCP Server 能拿到调用人归属头** | `SupportsObotHeaders()` 对 `RuntimeRemote`/`RuntimeContainerized` 返回 true |
+
+第三条最重要：它把「Obot 传不了员工身份」这个风险，收窄成了「Obot 的 **OpenAPI hosting runtime** 传不了」。
+结论是**不需要分叉 Obot 源码**——把适配器做成 remote MCP Server 即可。
+
+支持的归属头：`X-Obot-User-Id`、`X-Obot-User-Name`、`X-Obot-User-Email`、`X-Obot-IDP-User-Id`、`X-Obot-IDP-Groups`、`X-Obot-Api-Key-Id/Name`。
+
+**但这些头没有签名**（源码里没有 HMAC），所以适配器必须叠加网关共享密钥 + 网络隔离。
 
 ---
 
@@ -78,12 +105,17 @@ poc/
 │   ├── registry.py        # 能力注册与"发现即鉴权"
 │   ├── policy.py          # 工具级授权 + 数据范围收紧（第一层）
 │   ├── gateway.py         # GatewayPort 实现、超时、审计
+│   ├── mcp_adapter/       # 挂到 Obot 上的 remote MCP Server
+│   │   ├── attribution.py # X-Obot-* 归属头 → Actor（信任入口）
+│   │   └── server.py      # FastMCP 工具定义与调用收口
 │   └── adapters/
 │       ├── base.py        # ExecutionContext / Adapter 协议
 │       ├── mock_erp.py    # 服务账号型遗留系统（适配器承担业务鉴权）
 │       └── mock_crm.py    # 支持用户级权限的系统（源系统承担鉴权）
-├── tests/                 # 50 项断言，按 P01/P02/P04/P06 分组
-└── demo.py                # 人可读证据输出
+├── tests/                 # 71 项断言，按 P01/P02/P04/P06/归属头 分组
+├── demo.py                # 人可读证据输出
+├── smoke_mcp.py           # 真实 MCP 协议级冒烟
+└── DEPLOY-OBOT.md         # 挂到 Obot 的操作手册
 ```
 
 两个 mock 适配器刻意做成相反的极端，用来验证同一个契约能同时表达两种情况：
@@ -108,6 +140,7 @@ poc/
 
 ## 下一步
 
-1. 用同一套测试用例，把 `LocalGateway` 换成 `ObotGateway`（httpx 调 Obot），跑 P01/P02/P04/P06
-2. 补 P03（OpenAPI 转 MCP 的局限）、P05 的真实幂等、P07（内网连通）
-3. 补 P08（30–100 工具的能力发现准确率）——这一项需要先有工具集，mock 里目前只有 2 个能力
+1. **装上 Docker**，把 Obot 真正跑起来（本机卡在这一步）
+2. 按 [DEPLOY-OBOT.md](DEPLOY-OBOT.md) 注册适配器，补测 P01/P02/P04/P06 的真实归属头传递
+3. 把 `mock_erp.py` 换成真实 ERP 的 REST 调用——契约与鉴权链不用改
+4. 补 P08（30–100 工具的能力发现准确率）——目前只有 2 个能力，样本不足
