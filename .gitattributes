@@ -1,0 +1,14 @@
+# 统一换行符，避免 Windows / macOS 协作时整篇 diff
+* text=auto eol=lf
+
+*.md   text eol=lf
+*.json text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# 二进制文档
+*.docx binary
+*.doc  binary
+*.pdf  binary
+*.png  binary
+*.jpg  binary
